@@ -1,0 +1,166 @@
+/*** 
+FROM EXERCISE 1: 
+
+Step 1: Grabbing distinct cities. 
+Step 2: All customers that are eligible. Making sure the join criteria makes sense. 
+Step 3: Join eligible customers with their geo location from the distinct cities.  
+Step 4: Grabbing the supplier information and geo from the distinct cities. 
+Step 5: Calculating the distance with the st_distance function. Cross Joining to grab the distance for each supplier to customer. 
+Step 6: Filtering out only the closests suppliers to the customer using QUALIFY. 
+
+EXERCISE 2: 
+
+Step 7: Joining customer survey data and recipe tags to customer id. Also ensured the customers are still active. Using a window function to rank the food preference by tag property in ascending order. Limiting to only top 3 with QUALIFY. 
+
+Step 8: Pivoting the data to show top 3 food preferences. 
+
+Step 9: Flattening out the recipe tags. 
+
+Step 10:  Grabbing the first recipe tag using a window function based on recipe name. 
+
+Step 11: Joining the first recipe tag based on the first food preference to create the suggested recipe column. 
+
+***/
+
+
+
+with cities as (
+    select 
+    distinct 
+        lower(trim(city_name)) as city_name,
+        lower(trim(state_abbr)) as state_abbr,
+        geo_location
+    from vk_data.resources.us_cities as c
+)
+, eligible_customers as (
+    select 
+        cd.customer_id,
+        cd.first_name, 
+        cd.last_name, 
+        cd.email,
+        lower(trim(ca.customer_city)) as customer_city,
+        lower(trim(ca.customer_state)) as customer_state
+    from vk_data.customers.customer_data as cd
+    inner join vk_data.customers.customer_address as ca
+        on ca.customer_id = cd.customer_id
+    where 
+        lower(trim(ca.customer_city)) is not null 
+        and 
+        lower(trim(ca.customer_state)) is not null
+
+) 
+, customer_location as ( 
+    select 
+        ec.customer_id,
+        ec.first_name, 
+        ec.last_name, 
+        ec.email,
+        ec.customer_city, 
+        ec.customer_state, 
+        uc.geo_location as customer_geo
+
+    from eligible_customers as ec
+    inner join cities as uc 
+        on uc.city_name = ec.customer_city
+        and uc.state_abbr = ec.customer_state
+
+)
+, supplier_location as ( 
+
+
+    select
+        si.supplier_id, 
+        si.supplier_name,
+        lower(trim(si.supplier_city)),
+        lower(trim(si.supplier_state)),
+        uc.geo_location as supplier_geo
+    
+    from vk_data.suppliers.supplier_info as si 
+    inner join cities as uc 
+        on uc.city_name = lower(trim(si.supplier_city))
+        and uc.state_abbr = lower(trim(si.supplier_state))
+    
+)
+, customer_supplier_distance as (
+    select
+        cl.customer_id,
+        cl.first_name,
+        cl.last_name,
+        cl.email,
+        sl.supplier_id,
+        sl.supplier_name,
+        st_distance(sl.supplier_geo,cl.customer_geo)/1609 as distance_to_supplier_in_miles
+    from customer_location as cl 
+    cross join supplier_location as sl 
+)
+
+,closest_customer_supplier as (
+    select 
+        * 
+    from customer_supplier_distance
+    qualify row_number() over(partition by customer_id order by distance_to_supplier_in_miles) = 1
+    order by last_name asc, first_name asc
+)
+
+
+
+/*** EXERCISE 2 START ***/
+
+
+
+, customer_tags as (
+    select 
+        s.customer_id,
+        cd.email,
+        cd.first_name, 
+        cd.last_name,
+        rt.tag_property, 
+        row_number() over(partition by s.customer_id order by tag_property asc) as tag_count
+    from closest_customer_supplier cd 
+    inner join vk_data.customers.customer_survey as s    
+        on  s.customer_id = cd.customer_id 
+    inner join vk_data.resources.recipe_tags as rt 
+        on s.tag_id = rt.tag_id
+    where s.is_active = true
+    qualify row_number() over(partition by s.customer_id order by tag_property asc)<=3
+    order by s.customer_id asc 
+
+)
+,customer_preferences as (
+    select
+        *
+    from customer_tags
+    pivot(min(tag_property) for tag_count in (1,2,3))
+    as p(customer_id,email, first_name, last_name,food_preference_1,food_preference_2,food_preference_3)
+)
+, recipe_tags as(
+select 
+    recipe_id,
+    recipe_name,
+    trim(replace(flat_tag.value, '"', '')) as recipe_tag
+from vk_data.chefs.recipe
+, table(flatten(tag_list)) as flat_tag
+order by recipe_name
+)
+,recipe_option as (
+    select
+        recipe_tag,
+        recipe_name, 
+        row_number() over(partition by recipe_tag order by recipe_name) as recipe_count
+    from recipe_tags
+    qualify row_number() over(partition by recipe_tag order by recipe_name) = 1
+    
+)
+
+select 
+    cp.customer_id,
+    cp.email,
+    cp.first_name,
+    cp.food_preference_1,
+    cp.food_preference_2,
+    cp.food_preference_3,
+    ro.recipe_name as one_suggested_recipe
+from customer_preferences as cp 
+inner join recipe_option as ro
+    on lower(trim(ro.recipe_tag)) = lower(trim(cp.food_preference_1))
+order by email asc
