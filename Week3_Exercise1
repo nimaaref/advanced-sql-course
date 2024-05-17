@@ -1,0 +1,55 @@
+
+with unique_events as (
+    select 
+        event_id,
+        session_id,
+        event_timestamp,
+        trim(parse_json(event_details):"recipe_id",'"') as recipe_id,
+        trim(parse_json(event_details):"event",'"') as event_type
+    from vk_data.events.website_activity
+
+)
+
+, grouped_sessions as (
+SELECT 
+  session_id,
+  date(min(event_timestamp)) as event_date,
+  min(event_timestamp) as min_timestamp,
+  max(event_timestamp) as max_timestamp,
+  iff(count_if(event_type = 'view_recipe') = 0,null,
+  round(count_if(event_type = 'search')/count_if(event_type = 'view_recipe'))) as searches_per_recipe_view
+FROM unique_events
+group by 1
+)
+
+
+,most_viewed_recipes as (
+    select 
+        date(event_timestamp) as event_date,
+        recipe_id,
+        count(*) as total_views
+    from unique_events
+    where recipe_id is not null
+    group by event_date, recipe_id 
+    qualify row_number() over(partition by event_date order by total_views desc) = 1
+)
+
+, results as (
+select 
+    date(gs.min_timestamp) as event_date, 
+    COUNT(session_id) as unique_session_count, 
+    round(avg(datediff(second,min_timestamp,max_timestamp))) as avg_session_length_seconds,
+    max(gs.searches_per_recipe_view) as average_searches_per_recipes_viewed,
+    max(mvr.recipe_id) as most_viewed_recipe
+    
+from grouped_sessions as gs 
+inner join most_viewed_recipes as mvr
+    ON mvr.event_date = gs.event_date
+group by 1
+)
+
+select *
+
+from results 
+
+order by event_date asc
