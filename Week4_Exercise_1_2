@@ -1,0 +1,118 @@
+
+/**
+
+PART 1
+
+STEP 1: Grab customer orders, date, and total cost for urgent automobile customers. 
+STEP 2: Aggregate the last order date for each customer. 
+STEP 3: Window function to rank the orders based on total spent. 
+STEP 4: For each customer order finding the associated order line, parts and quantity. 
+STEP 5: Window function to rank the parts based on the total part revenue. 
+STEP 6: Filtering the top 3 orders and aggregating the top 3 orders for each customer using LISTAGG function. 
+STEP 7: Filtering the top 3 parts based on the part revenue. 
+STEP 8: Final summary of all parts. Aggregating data and using MAX CASE to highlight the information for each priority part. 
+
+**/ 
+WITH CUSTOMER_ORDERS AS (
+    SELECT 
+        O.O_CUSTKEY,
+        O.O_ORDERKEY,
+        O.O_ORDERDATE,
+        SUM(O.O_TOTALPRICE) AS TOTAL_SPENT
+    FROM ORDERS AS O 
+    INNER JOIN CUSTOMER AS C ON C.C_CUSTKEY = O.O_CUSTKEY
+    WHERE O.O_ORDERPRIORITY = '1-URGENT'
+      AND C.C_MKTSEGMENT = 'AUTOMOBILE'
+    GROUP BY O.O_CUSTKEY, O.O_ORDERKEY, O.O_ORDERDATE
+)
+, CUSTOMER_LAST_ORDER AS (
+    SELECT 
+        O_CUSTKEY, 
+        MAX(O_ORDERDATE) AS LAST_ORDER_DATE
+    FROM CUSTOMER_ORDERS 
+    GROUP BY O_CUSTKEY
+)
+, CUSTOMER_ORDERS_PRIORITIZED AS (
+    SELECT 
+        O_CUSTKEY,
+        O_ORDERKEY,
+        O_ORDERDATE,
+        TOTAL_SPENT,
+        ROW_NUMBER() OVER (PARTITION BY O_CUSTKEY ORDER BY TOTAL_SPENT DESC) AS PRIORITY_ORDER
+    FROM CUSTOMER_ORDERS
+)
+, CUSTOMER_ORDER_ORDERLINE AS ( 
+    SELECT 
+        CO.O_CUSTKEY, 
+        CO.O_ORDERKEY,
+        LI.L_PARTKEY, 
+        SUM(LI.L_QUANTITY) AS TOTAL_QUANTITY, 
+        SUM(LI.L_EXTENDEDPRICE) AS PART_REVENUE    
+    FROM CUSTOMER_ORDERS AS CO
+    INNER JOIN LINEITEM AS LI ON LI.L_ORDERKEY = CO.O_ORDERKEY
+    GROUP BY CO.O_CUSTKEY, CO.O_ORDERKEY, LI.L_PARTKEY
+)
+, PRIORITIZED_ORDERS_PART AS (
+    SELECT 
+        COO.O_CUSTKEY,
+        COO.O_ORDERKEY,
+        COO.L_PARTKEY,
+        COO.TOTAL_QUANTITY,
+        COO.PART_REVENUE,
+        ROW_NUMBER() OVER (PARTITION BY COO.O_CUSTKEY ORDER BY COO.PART_REVENUE DESC) AS PRIORITY_PART
+    FROM CUSTOMER_ORDER_ORDERLINE AS COO 
+)
+, TOP_3_ORDERS AS (
+    SELECT 
+        O_CUSTKEY, 
+        LISTAGG(O_ORDERKEY, ', ') AS ORDER_NUMBERS, 
+        SUM(TOTAL_SPENT) AS TOTAL_SPENT
+    FROM CUSTOMER_ORDERS_PRIORITIZED
+    WHERE PRIORITY_ORDER <= 3 
+    GROUP BY O_CUSTKEY
+)
+
+, TOP_3_PARTS AS (
+    SELECT 
+        O_CUSTKEY, 
+        L_PARTKEY,
+        TOTAL_QUANTITY,
+        PART_REVENUE,
+        PRIORITY_PART
+    FROM PRIORITIZED_ORDERS_PART
+    WHERE PRIORITY_PART <= 3
+)
+
+SELECT 
+    T3O.O_CUSTKEY, 
+    T3O.ORDER_NUMBERS, 
+    MAX(CLO.LAST_ORDER_DATE) AS LAST_ORDER_DATE,
+    SUM(T3O.TOTAL_SPENT) AS TOTAL_SPENT,
+    MAX(CASE WHEN T3P.PRIORITY_PART = 1 THEN T3P.L_PARTKEY END) AS PART_1_KEY, 
+    MAX(CASE WHEN T3P.PRIORITY_PART = 1 THEN T3P.TOTAL_QUANTITY END) AS PART_1_QUANTITY, 
+    MAX(CASE WHEN T3P.PRIORITY_PART = 1 THEN T3P.PART_REVENUE END) AS PART_1_TOTAL_SPENT,
+    MAX(CASE WHEN T3P.PRIORITY_PART = 2 THEN T3P.L_PARTKEY END) AS PART_2_KEY, 
+    MAX(CASE WHEN T3P.PRIORITY_PART = 2 THEN T3P.TOTAL_QUANTITY END) AS PART_2_QUANTITY, 
+    MAX(CASE WHEN T3P.PRIORITY_PART = 2 THEN T3P.PART_REVENUE END) AS PART_2_TOTAL_SPENT,
+    MAX(CASE WHEN T3P.PRIORITY_PART = 3 THEN T3P.L_PARTKEY END) AS PART_3_KEY,
+    MAX(CASE WHEN T3P.PRIORITY_PART = 3 THEN T3P.TOTAL_QUANTITY END) AS PART_3_QUANTITY, 
+    MAX(CASE WHEN T3P.PRIORITY_PART = 3 THEN T3P.PART_REVENUE END) AS PART_3_TOTAL_SPENT
+FROM TOP_3_ORDERS T3O
+INNER JOIN CUSTOMER_LAST_ORDER CLO ON CLO.O_CUSTKEY = T3O.O_CUSTKEY
+INNER JOIN TOP_3_PARTS T3P ON T3P.O_CUSTKEY = T3O.O_CUSTKEY
+GROUP BY T3O.O_CUSTKEY, T3O.ORDER_NUMBERS
+ORDER BY LAST_ORDER_DATE DESC 
+LIMIT 100 ; 
+
+/** PART 2 
+
+1. Do you agree with the results returned by the query?
+A: No, we have different total row number counts. I believe the difference is that the candidate used inner join on his last step rather than left joins. This is causing the candidate to filter out required rows. Additionally, it looks like the candidate misunderstood the assignment as they did not summarize the total spend for all urgent orders and rather only for the top 3 parts. 
+
+2. Is it easy to understand?
+A: I think it's relatively easy to understand. Some comments explaining each step would be helpful. 
+
+3. Could the code be more efficient?
+A: Yes, instead of self joining in the last step they could have used aggregate MAX/CASE functions. 
+
+**/
